@@ -80,8 +80,13 @@ async function resolveOrder(
 // ─── Gmail attachment download ────────────────────────────────────────────────
 
 function makeGmail() {
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_B64;
+  const authOptions: ConstructorParameters<typeof google.auth.GoogleAuth>[0] = b64
+    ? { credentials: JSON.parse(Buffer.from(b64, "base64").toString("utf8")) }
+    : { keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE! };
+
   const auth = new google.auth.GoogleAuth({
-    keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE!,
+    ...authOptions,
     scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
     clientOptions: { subject: process.env.GMAIL_USER ?? "amit@aureotitle.com" },
   });
