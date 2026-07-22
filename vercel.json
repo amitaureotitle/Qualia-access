@@ -3,7 +3,11 @@
   "builds": [
     {
       "src": "src/server.ts",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 300,
+        "includeFiles": "node_modules/@modelcontextprotocol/sdk/**"
+      }
     }
   ],
   "routes": [

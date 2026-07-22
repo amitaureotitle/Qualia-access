@@ -145,7 +145,13 @@ function createMcpServer(): McpServer {
         return { content: [{ type: "text" as const, text: `No order found matching: "${order_search}"` }] };
       }
 
-      const files = await downloadPdfAttachments(gmail_message_id);
+      let files: { name: string; path: string }[];
+      try {
+        files = await downloadPdfAttachments(gmail_message_id);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: "text" as const, text: `Gmail attachment fetch failed: ${message}` }] };
+      }
       if (files.length === 0) {
         return { content: [{ type: "text" as const, text: "No PDF attachments found in that message" }] };
       }
