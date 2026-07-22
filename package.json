@@ -28,11 +28,13 @@
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.12.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/express": "^5.0.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "googleapis": "^172.0.0",
     "pdf-parse": "^2.4.5",
-    "playwright-core": "^1.60.0"
+    "playwright-core": "^1.60.0",
+    "zod": "^4.4.3"
   }
 }
