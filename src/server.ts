@@ -12,6 +12,10 @@
 import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import { getCharges, CdfSection } from "./scripts/read/get-charges";
+import { mcpHandler } from "./mcp-server";
+import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { createOAuthProvider, loginHandler } from "./mcp-auth";
 
 dotenv.config();
 
@@ -20,8 +24,19 @@ const API_KEY = process.env.QUALIA_API_KEY;
 
 if (!API_KEY) throw new Error("QUALIA_API_KEY env var is required");
 
+const ISSUER = new URL(process.env.MCP_ISSUER_URL ?? "https://qualia-access.vercel.app");
+
+const oauthProvider = createOAuthProvider();
+
 const app = express();
 app.use(express.json());
+
+// ─── MCP OAuth endpoints ──────────────────────────────────────────────────────
+
+app.use(mcpAuthRouter({ provider: oauthProvider, issuerUrl: ISSUER }));
+
+// Login form submission (form action in mcp-auth.ts loginForm())
+app.post("/oauth/login", express.urlencoded({ extended: false }), loginHandler);
 
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 
@@ -34,6 +49,13 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
   }
   next();
 }
+
+// ─── MCP endpoint ─────────────────────────────────────────────────────────────
+
+const mcpAuth = requireBearerAuth({ verifier: oauthProvider });
+// POST handles tool calls; GET handles SSE stream for long-running tools
+app.post("/mcp", mcpAuth, mcpHandler);
+app.get("/mcp", mcpAuth, mcpHandler);
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 

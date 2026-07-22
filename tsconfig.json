@@ -13,7 +13,18 @@
     "skipLibCheck": true,
     "moduleResolution": "node10",
     "ignoreDeprecations": "6.0",
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@modelcontextprotocol/sdk/server/mcp.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/mcp"],
+      "@modelcontextprotocol/sdk/server/streamableHttp.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/streamableHttp"],
+      "@modelcontextprotocol/sdk/server/auth/router.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/auth/router"],
+      "@modelcontextprotocol/sdk/server/auth/provider.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/auth/provider"],
+      "@modelcontextprotocol/sdk/server/auth/clients.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/auth/clients"],
+      "@modelcontextprotocol/sdk/server/auth/types.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/auth/types"],
+      "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/server/auth/middleware/bearerAuth"],
+      "@modelcontextprotocol/sdk/shared/auth.js": ["node_modules/@modelcontextprotocol/sdk/dist/cjs/shared/auth"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
