@@ -16,6 +16,11 @@ import { mcpHandler } from "./mcp-server";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { createOAuthProvider, loginHandler } from "./mcp-auth";
+import { withSession } from "./browserbase";
+import { fetchOrderByNumber } from "./utils/order-api";
+import { verifyRecording } from "./actions/verify-recording";
+import { prepareFinalPolicy, PolicyKind } from "./actions/prepare-final-policy";
+import { issueFinalPolicies } from "./actions/issue-final-policies";
 
 dotenv.config();
 
@@ -101,6 +106,83 @@ app.post("/charges", requireAuth, async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[error] ${message}`);
     res.status(500).json({ error: message });
+  }
+});
+
+/**
+ * POST /post-closing/check-and-prepare
+ * Body: { orderNumber: string }
+ * Non-destructive: checks Recording status, and if recorded, navigates to
+ * Final Policy and sets the two checkboxes for every present policy panel.
+ * Never clicks Issue -- see /post-closing/issue-policies for that.
+ * Returns: { status: "not_recorded" | "missing_instrument" | "ready" | "error",
+ *            policies?: PolicyKind[], detail?: string }
+ */
+app.post("/post-closing/check-and-prepare", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber } = req.body as { orderNumber?: string };
+  if (!orderNumber || typeof orderNumber !== "string") {
+    res.status(400).json({ error: "orderNumber is required" });
+    return;
+  }
+
+  console.log(`[${new Date().toISOString()}] post-closing check-and-prepare  order=${orderNumber}`);
+
+  try {
+    const order = await fetchOrderByNumber(orderNumber);
+    if (!order) {
+      res.status(404).json({ status: "error", detail: `Order ${orderNumber} not found` });
+      return;
+    }
+
+    const result = await withSession(async (page) => {
+      const recording = await verifyRecording(page, order.qualia_id);
+      if (!recording.recorded) return { status: "not_recorded" as const };
+      return prepareFinalPolicy(page, order.qualia_id);
+    }, { timeout: 600 });
+
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[error] ${message}`);
+    res.status(500).json({ status: "error", detail: message });
+  }
+});
+
+/**
+ * POST /post-closing/issue-policies
+ * Body: { orderNumber: string, policies: PolicyKind[] }
+ * Destructive: clicks Issue (All Policies, or the single Issue button for a
+ * cash deal). Only ever called by the Python side after it holds the
+ * post_closing_issue_policies claim -- this endpoint has no idempotency
+ * guard of its own, same posture as this repo's other action wrappers.
+ * Returns: { status: "issued" | "error", policies?: PolicyKind[], detail?: string }
+ */
+app.post("/post-closing/issue-policies", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, policies } = req.body as { orderNumber?: string; policies?: PolicyKind[] };
+  if (!orderNumber || typeof orderNumber !== "string" || !Array.isArray(policies) || policies.length === 0) {
+    res.status(400).json({ error: "orderNumber and a non-empty policies array are required" });
+    return;
+  }
+
+  console.log(`[${new Date().toISOString()}] post-closing issue-policies  order=${orderNumber}  policies=${policies.join(",")}`);
+
+  try {
+    const order = await fetchOrderByNumber(orderNumber);
+    if (!order) {
+      res.status(404).json({ status: "error", detail: `Order ${orderNumber} not found` });
+      return;
+    }
+
+    const result = await withSession(
+      (page) => issueFinalPolicies(page, order.qualia_id, policies),
+      { timeout: 600 }
+    );
+
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[error] ${message}`);
+    res.status(500).json({ status: "error", detail: message });
   }
 });
 
