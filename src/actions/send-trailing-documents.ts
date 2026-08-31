@@ -7,6 +7,7 @@ export interface SendTrailingDocsResult {
   status: "sent" | "error";
   recipients?: string[];
   attachments?: string[];
+  bodyPreview?: string;
   detail?: string;
 }
 
@@ -51,7 +52,7 @@ export async function sendTrailingDocuments(
   orderId: string,
   address: string,
   policies: PolicyKind[],
-  opts: { composeOnly?: boolean; ownerEmailOverride?: string } = {}
+  opts: { composeOnly?: boolean; ownerEmailOverride?: string; note?: string } = {}
 ): Promise<SendTrailingDocsResult> {
   await navigateToOrder(page, orderId, "dashboard");
   await dismissStartupModals(page);
@@ -89,6 +90,49 @@ export async function sendTrailingDocuments(
   `);
   if (subjectResult !== "filled") {
     return { status: "error", detail: `Subject fill failed: ${subjectResult}` };
+  }
+
+  // Body is a Quill editor -- <div class="ql-editor" contenteditable> is
+  // what's visible/typed into, synced to a hidden <textarea
+  // data-schema-key="body"> that's the actual submitted field. Confirmed
+  // live 2026-08-31 (inspect-trailing-docs-body.ts against 2026-MO-249):
+  // Qualia pre-fills the editor with a default signature block, so opts.note
+  // is typed in via real keyboard events (Quill needs genuine input events,
+  // not a raw value-set) at the very start, ahead of that signature, rather
+  // than replacing it.
+  let bodyPreview: string | undefined;
+  if (opts.note) {
+    const editor = page.locator(".ql-editor").first();
+    const editorFound = await editor.waitFor({ state: "attached", timeout: 10_000 }).then(() => true).catch(() => false);
+    if (!editorFound) {
+      return { status: "error", detail: "Body editor (.ql-editor) not found." };
+    }
+    await editor.click();
+    const caretSet: string = await page.evaluate(`
+      (function() {
+        var editor = document.querySelector('.ql-editor');
+        var range = document.createRange();
+        var sel = window.getSelection();
+        range.setStart(editor.firstChild || editor, 0);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return 'positioned';
+      })()
+    `);
+    if (caretSet !== "positioned") {
+      return { status: "error", detail: `Could not position caret in body editor: ${caretSet}` };
+    }
+    await page.keyboard.type(opts.note);
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    bodyPreview = await page.evaluate(`
+      (function() {
+        var editor = document.querySelector('.ql-editor');
+        return (editor.textContent || '').slice(0, 300);
+      })()
+    `);
   }
 
   // For the owner side, some source-of-business entities want documents
@@ -218,7 +262,7 @@ export async function sendTrailingDocuments(
   }
 
   if (opts.composeOnly) {
-    return { status: "sent", recipients, attachments, detail: "[composeOnly] nothing actually sent" };
+    return { status: "sent", recipients, attachments, bodyPreview, detail: "[composeOnly] nothing actually sent" };
   }
 
   const sendResult: string = await page.evaluate(`
@@ -238,5 +282,5 @@ export async function sendTrailingDocuments(
   }
   await page.waitForTimeout(3_000);
 
-  return { status: "sent", recipients, attachments };
+  return { status: "sent", recipients, attachments, bodyPreview };
 }
