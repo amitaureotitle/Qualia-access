@@ -23,6 +23,7 @@ import { prepareFinalPolicy, PolicyKind } from "./actions/prepare-final-policy";
 import { issueFinalPolicies } from "./actions/issue-final-policies";
 import { sendTrailingDocuments } from "./actions/send-trailing-documents";
 import { closeOrder } from "./actions/close-order";
+import { matchEmdWire } from "./actions/match-emd-wire";
 
 dotenv.config();
 
@@ -237,6 +238,55 @@ app.post("/post-closing/send-and-close", requireAuth, async (req: Request, res: 
         closeDetail: closeResult.detail,
       };
     }, { timeout: 600 });
+
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[error] ${message}`);
+    res.status(500).json({ status: "error", detail: message });
+  }
+});
+
+/**
+ * POST /accounting/match-emd-wire
+ * Body: { orderNumber: string, fedwireNumber: string, composeOnly?: boolean }
+ * Destructive: navigates Banking > Incoming Wires (Pending) for the Axos
+ * Trust Account, finds the pending wire by FedWire #, opens its "Match and
+ * Resolve Wire" > "Send To Order" dialog, resolves orderNumber to a real
+ * order and cross-checks the resulting address against Qualia's own
+ * fetchOrderByNumber(orderNumber) address before ever submitting, then
+ * clicks the real "Send To Order" submit -- creates a real transaction
+ * matching real escrow money to a real order, irreversible via this action.
+ * Pass composeOnly: true to stop right before that click and just return
+ * what would have been matched (see match-emd-wire.ts's doc comment --
+ * always dry-run at least once against any new pending wire before a real
+ * call).
+ * Returns: { status: "matched"|"error", matchedText?, detail? }.
+ */
+app.post("/accounting/match-emd-wire", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, fedwireNumber, composeOnly } = req.body as {
+    orderNumber?: string;
+    fedwireNumber?: string;
+    composeOnly?: boolean;
+  };
+  if (!orderNumber || !fedwireNumber) {
+    res.status(400).json({ error: "orderNumber and fedwireNumber are required" });
+    return;
+  }
+
+  console.log(`[${new Date().toISOString()}] accounting match-emd-wire  order=${orderNumber}  fedwire=${fedwireNumber}${composeOnly ? "  composeOnly" : ""}`);
+
+  try {
+    const order = await fetchOrderByNumber(orderNumber);
+    if (!order) {
+      res.status(404).json({ status: "error", detail: `Order ${orderNumber} not found` });
+      return;
+    }
+
+    const result = await withSession(
+      (page) => matchEmdWire(page, orderNumber, fedwireNumber, order.address1, { composeOnly }),
+      { timeout: 300 }
+    );
 
     res.json(result);
   } catch (err) {
