@@ -13,6 +13,14 @@ export interface OrderRecord {
   purchase_price: string | null;
   buyers: string | null;
   sellers: string | null;
+  seller_email: string | null;
+  /** Wholesaler/referral company name (e.g. "ZMO Homes"), or null for a direct/organic deal. */
+  source_of_business: string | null;
+}
+
+export interface WholesalerContact {
+  wholesaler_name: string | null;
+  wholesaler_email: string | null;
 }
 
 /**
@@ -44,4 +52,23 @@ export async function fetchOrdersByAddress(street: string): Promise<OrderRecord[
   if (res.status === 404) return [];
   if (!res.ok) throw new Error(`Order API ${res.status}: ${await res.text()}`);
   return res.json() as Promise<OrderRecord[]>;
+}
+
+/**
+ * Best-effort wholesaler name/email for a wholesaler-sourced order. There's no
+ * stored contact for this anywhere in Qualia, so the server resolves it by
+ * searching Gmail for the earliest message about the order's address and
+ * returning whoever sent it -- both fields come back null for a direct/organic
+ * deal (no source_of_business on file) or if no matching email was found.
+ * This hits Gmail live on the server, so only call it when actually needed.
+ */
+export async function fetchWholesalerContact(orderNumber: string): Promise<WholesalerContact> {
+  const base = (process.env.BASE_URL ?? "").replace(/\/$/, "");
+  const key = process.env.INTERNAL_API_KEY ?? "";
+  const res = await fetch(
+    `${base}/api/internal/order/${encodeURIComponent(orderNumber)}/wholesaler-contact`,
+    { headers: { "X-Internal-Key": key } }
+  );
+  if (!res.ok) throw new Error(`Order API ${res.status}: ${await res.text()}`);
+  return res.json() as Promise<WholesalerContact>;
 }

@@ -6,6 +6,7 @@
  *   update_closing_date   — set the estimated closing date on a Qualia order
  *   update_purchase_price — set the purchase price on a Qualia order
  *   get_charges           — read CDF charge rows from a Qualia order
+ *   get_order_contacts    — seller email, and (best-effort, Gmail-derived) wholesaler name/email
  *
  * Each tool accepts either an order number (2026-MO-XXX) or a street address
  * for the order_search parameter.
@@ -38,7 +39,7 @@ import { updateClosingDate } from "./actions/update-closing-date";
 import { updatePurchasePrice } from "./actions/update-purchase-price";
 import { getCharges } from "./scripts/read/get-charges";
 import type { CdfSection } from "./scripts/read/get-charges";
-import { fetchOrderByNumber, fetchOrdersByAddress } from "./utils/order-api";
+import { fetchOrderByNumber, fetchOrdersByAddress, fetchWholesalerContact } from "./utils/order-api";
 import type { OrderRecord } from "./utils/order-api";
 
 // ─── Address helpers ──────────────────────────────────────────────────────────
@@ -266,6 +267,40 @@ function createMcpServer(): McpServer {
         content: [{
           type: "text" as const,
           text: `${order.order_number} — ${resolvedSection}:\n${lines.join("\n")}${note}`,
+        }],
+      };
+    }
+  );
+
+  // ── get_order_contacts ──────────────────────────────────────────────────────
+  server.tool(
+    "get_order_contacts",
+    "Get the seller's email and, for a wholesaler-sourced order, the wholesaler's name and email. " +
+    "There's no stored wholesaler contact in Qualia, so that part is a best-effort lookup: the server " +
+    "searches Gmail for the earliest email about the order's address and returns whoever sent it. " +
+    "Both wholesaler fields come back null for a direct/organic deal or if no matching email was found.",
+    {
+      order_search: z.string().describe("Order number (e.g. 2026-MO-267) or street address"),
+    },
+    async ({ order_search }) => {
+      const { order, ambiguous } = await resolveOrder(order_search);
+      if (!order) {
+        return { content: [{ type: "text" as const, text: `No order found matching: "${order_search}"` }] };
+      }
+
+      const { wholesaler_name, wholesaler_email } = await fetchWholesalerContact(order.order_number);
+
+      const lines = [
+        `Seller: ${order.sellers ?? "—"} <${order.seller_email ?? "no email on file"}>`,
+        wholesaler_name || wholesaler_email
+          ? `Wholesaler: ${wholesaler_name ?? "unknown name"} <${wholesaler_email ?? "no matching email found"}>`
+          : "Wholesaler: none (direct/organic deal — no source of business on file)",
+      ];
+      const note = ambiguous ? `\nNote: matched ${order.order_number} from ambiguous address` : "";
+      return {
+        content: [{
+          type: "text" as const,
+          text: `${order.order_number}:\n${lines.join("\n")}${note}`,
         }],
       };
     }
