@@ -1,5 +1,6 @@
+import { readFileSync } from "fs";
+import { basename } from "path";
 import type { Page } from "playwright-core";
-import { navigateToOrder } from "../utils/navigate";
 import { dismissStartupModals } from "../utils/dismiss-modals";
 
 export interface UploadOptions {
@@ -18,33 +19,67 @@ export async function uploadDocument(
   filePath: string,
   options: UploadOptions = {}
 ): Promise<void> {
-  await navigateToOrder(page, orderId, "documents");
-
-  // Wait for the three-tab toolbar (Generate / Scan / Upload)
-  await page.waitForSelector('[data-mode="upload"]', { timeout: 15_000 });
-
-  // Dismiss startup modals (e.g. timezone detection)
+  await page.goto(
+    `https://aureotitle.qualia.io/orders/${orderId}/documents`,
+    { waitUntil: "domcontentloaded", timeout: 90000 }
+  );
   await dismissStartupModals(page);
+  await page.waitForTimeout(3000);
 
-  // Click the Upload tab
-  await page.locator('[data-mode="upload"]').click();
+  // Click the "Upload" link/button to open the upload dialog
+  await page.evaluate(`
+    (function() {
+      var all = document.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var txt = (all[i].textContent || '').trim();
+        if (txt === 'Upload' && all[i].offsetParent !== null) {
+          all[i].click();
+          return;
+        }
+      }
+    })()
+  `);
+  await page.waitForTimeout(1000);
 
-  // Set the file directly on the hidden <input type="file">
-  await page.locator('input[type="file"]').setInputFiles(filePath);
+  // Set the file — pass as buffer so remote Playwright can access it regardless of path resolution
+  await page.setInputFiles('input[type="file"]', {
+    name: basename(filePath),
+    mimeType: filePath.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/octet-stream",
+    buffer: readFileSync(filePath),
+  });
+  await page.waitForTimeout(1500);
 
-  // "Confirm Uploaded Document Names" dialog appears — optionally set a name
-  await page.waitForSelector('text=Confirm Uploaded Document Names', { timeout: 15_000 });
+  // Optionally fill document name
   if (options.name) {
-    const nameInput = page.locator('input[placeholder="Enter document name"]').first();
-    await nameInput.fill(options.name);
+    await page.evaluate(`
+      (function() {
+        var inputs = document.querySelectorAll('input[type="text"], input[placeholder]');
+        for (var i = 0; i < inputs.length; i++) {
+          var ph = (inputs[i].placeholder || '').toLowerCase();
+          if (ph.includes('name') || ph.includes('title') || ph.includes('document')) {
+            inputs[i].value = ${JSON.stringify(options.name)};
+            inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+            inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
+            return;
+          }
+        }
+      })()
+    `);
+    await page.waitForTimeout(500);
   }
 
-  // Save
-  await page.getByText("Save", { exact: true }).click();
-
-  // Wait for the dialog to close
-  await page.waitForSelector('text=Confirm Uploaded Document Names', {
-    state: "hidden",
-    timeout: 15_000,
-  });
+  // Click Save / Upload / Submit
+  await page.evaluate(`
+    (function() {
+      var all = document.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var txt = (all[i].textContent || '').trim();
+        if ((txt === 'Save' || txt === 'Upload' || txt === 'Submit') && all[i].offsetParent !== null) {
+          all[i].click();
+          return;
+        }
+      }
+    })()
+  `);
+  await page.waitForTimeout(4000);
 }

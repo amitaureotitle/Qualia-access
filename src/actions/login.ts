@@ -17,7 +17,15 @@ export const SIGNIN_URL = new URL("/signin", baseUrl).href;
 /** Fill email + password and click Sign In. Does NOT wait for redirect. */
 export async function fillCredentials(page: Page): Promise<void> {
   await page.goto(SIGNIN_URL, { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('input[type="email"]', { timeout: 15_000 });
+
+  // If already authenticated, Qualia's JS redirects away from /signin after DOM load.
+  // Wait for either the email input to appear (need to login) or navigation away (already logged in).
+  const outcome = await Promise.race([
+    page.waitForSelector('input[type="email"]', { timeout: 10_000 }).then(() => "form" as const),
+    page.waitForURL((url) => !url.href.includes("/signin"), { timeout: 10_000 }).then(() => "loggedin" as const),
+  ]).catch(() => "timeout" as const);
+
+  if (outcome === "loggedin" || outcome === "timeout") return;
   await page.locator('input[type="email"]').fill(username!);
   await page.locator('input[type="password"]').fill(password!);
   await page.getByText("Sign In", { exact: true }).click();
@@ -44,10 +52,11 @@ export async function fillMfa(page: Page): Promise<void> {
  */
 export async function login(page: Page): Promise<void> {
   await fillCredentials(page);
+  if (!page.url().includes("/signin")) return; // already logged in
 
-  // Wait for post-click navigation: either MFA page or straight to app
+  // Wait for post-click result: MFA digit inputs appear, or redirect away from signin
   const outcome = await Promise.race([
-    page.waitForURL(/signin\/#mfa|signin#mfa/, { timeout: 15_000 }).then(() => "mfa" as const),
+    page.waitForSelector('input.digit', { timeout: 15_000 }).then(() => "mfa" as const),
     page.waitForURL((url) => !url.href.includes("/signin"), { timeout: 15_000 }).then(() => "home" as const),
   ]).catch(() => "timeout" as const);
 

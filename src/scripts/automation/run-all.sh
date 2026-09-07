@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 cd /Users/amitmittelman/GitHub/Qualia-access
 
 # Wait for network to be available (handles post-sleep wake-up)
@@ -11,6 +10,11 @@ for i in 1 2 3 4 5; do
   sleep 5
 done
 
-/opt/homebrew/bin/npx ts-node src/scripts/automation/process-closing-amendments.ts
-/opt/homebrew/bin/npx ts-node src/scripts/automation/process-docusign-completions.ts
-/opt/homebrew/bin/npx ts-node src/scripts/automation/process-labeled-emails.ts
+# Each script runs independently — a failure in one (network blip, login
+# timeout, etc.) must not prevent the others from running this hour.
+status=0
+/opt/homebrew/bin/npx ts-node src/scripts/automation/process-closing-amendments.ts || status=1
+/opt/homebrew/bin/npx ts-node src/scripts/automation/process-docusign-completions.ts || status=1
+/opt/homebrew/bin/npx ts-node src/scripts/automation/process-labeled-emails.ts || status=1
+/opt/homebrew/bin/npx ts-node src/scripts/automation/process-datatrace-bundle.ts || status=1
+exit $status
