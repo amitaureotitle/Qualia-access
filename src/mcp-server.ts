@@ -288,7 +288,12 @@ function createMcpServer(): McpServer {
         return { content: [{ type: "text" as const, text: `No order found matching: "${order_search}"` }] };
       }
 
-      const { wholesaler_name, wholesaler_email } = await fetchWholesalerContact(order.order_number);
+      // Skip the live Gmail lookup entirely when we already know this is a
+      // direct/organic deal (no source_of_business on file) -- the order
+      // lookup above already tells us that for free.
+      const { wholesaler_name, wholesaler_email } = order.source_of_business
+        ? await fetchWholesalerContact(order.order_number)
+        : { wholesaler_name: null, wholesaler_email: null };
 
       const lines = [
         `Seller: ${order.sellers ?? "—"} <${order.seller_email ?? "no email on file"}>`,
