@@ -41,19 +41,9 @@ import { getCharges } from "./scripts/read/get-charges";
 import type { CdfSection } from "./scripts/read/get-charges";
 import { fetchOrderByNumber, fetchOrdersByAddress, fetchWholesalerContact } from "./utils/order-api";
 import type { OrderRecord } from "./utils/order-api";
+import { expandStreetAbbreviations } from "./utils/address";
 
 // ─── Address helpers ──────────────────────────────────────────────────────────
-
-function expandStreetAbbreviations(street: string): string {
-  return street
-    .replace(/\bN\b/g, "North").replace(/\bS\b/g, "South")
-    .replace(/\bE\b/g, "East").replace(/\bW\b/g, "West")
-    .replace(/\bSt\.?\b/g, "Street").replace(/\bAve\.?\b/g, "Avenue")
-    .replace(/\bBlvd\.?\b/g, "Boulevard").replace(/\bDr\.?\b/g, "Drive")
-    .replace(/\bRd\.?\b/g, "Road").replace(/\bLn\.?\b/g, "Lane")
-    .replace(/\bCt\.?\b/g, "Court").replace(/\bPl\.?\b/g, "Place")
-    .replace(/\bPkwy\.?\b/g, "Parkway").replace(/\bCir\.?\b/g, "Circle");
-}
 
 async function resolveOrder(
   search: string

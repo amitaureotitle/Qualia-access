@@ -41,6 +41,10 @@ interface EmailRecord {
   id: string;
   subject: string;
   htmlBody: string;
+  /** Unix ms, from the Gmail message resource's own internalDate -- used to
+   * pick the most recent email's content when more than one maps to the
+   * same order, rather than relying on messages.list's unspecified order. */
+  internalDate: number;
 }
 
 async function fetchLabeledEmails(): Promise<EmailRecord[]> {
@@ -70,7 +74,8 @@ async function fetchLabeledEmails(): Promise<EmailRecord[]> {
     }
     extractBody(full.data.payload);
 
-    results.push({ id, subject, htmlBody });
+    const internalDate = Number(full.data.internalDate ?? 0);
+    results.push({ id, subject, htmlBody, internalDate });
   }
   return results;
 }
@@ -118,8 +123,17 @@ function parseScheduleB(text: string): { requirements: string[]; exceptions: str
     throw new Error("Could not find SCHEDULE B-SECTION ONE or TWO in PDF text");
   }
 
-  const formFeedIdx = text.indexOf("\f", sec2Idx);
-  const sec2End = formFeedIdx > -1 ? formFeedIdx : text.length;
+  // pdftotext inserts \f at every page break -- NOT a section boundary. A
+  // Schedule B-Section Two that spans more than one page was silently
+  // truncated at the first page break inside it. Use real section-end
+  // markers instead (ported from process-one-order.ts, where this was
+  // caught and fixed first).
+  const endMarkers = ["SCHEDULE C", "IN WITNESS WHEREOF", "ENDORSEMENT"];
+  let sec2End = text.length;
+  for (const marker of endMarkers) {
+    const idx = text.indexOf(marker, sec2Idx + 30);
+    if (idx > -1 && idx < sec2End) sec2End = idx;
+  }
 
   function parseItems(sectionText: string): string[] {
     const items: string[] = [];
@@ -218,7 +232,7 @@ async function importXmlToQualia(
   page: Page,
   qualiaId: string,
   xmlPath: string
-): Promise<void> {
+): Promise<boolean> {
   await page.goto(
     `https://aureotitle.qualia.io/orders/${qualiaId}/title/commitment?section=requirements`,
     { waitUntil: "domcontentloaded", timeout: 90000 }
@@ -264,20 +278,42 @@ async function importXmlToQualia(
   await page.waitForTimeout(2000);
 
   // Click "Import" in the Confirm Import popup — <yes class="ui negative approve button">
-  await page.evaluate(`
+  const clickedImport: boolean = await page.evaluate(`
     (function() {
       var yes = document.querySelector('yes');
-      if (yes) { yes.click(); return; }
+      if (yes) { yes.click(); return true; }
       // Fallback: any visible element with text "Import"
       var all = document.querySelectorAll('*');
       for (var i = 0; i < all.length; i++) {
         if (all[i].children.length === 0 && all[i].textContent.trim() === 'Import' && all[i].offsetParent !== null) {
-          all[i].click(); return;
+          all[i].click(); return true;
         }
       }
+      return false;
     })()
   `);
+  if (!clickedImport) {
+    console.log("  ⚠ Could not find the Import confirm button");
+    return false;
+  }
   await page.waitForTimeout(6000); // wait for import to complete
+
+  // Verify the import dialog actually closed rather than assuming success --
+  // <uploadcommitmentpopup> is the whole import dialog (per the comment
+  // above, the title-provider dropdown lives inside it), so it should be
+  // gone once Qualia accepts the import. If Qualia showed a validation error
+  // instead, the popup (and its contents) are still there.
+  const popupStillOpen: boolean = await page.evaluate(`
+    (function() {
+      var popup = document.querySelector('uploadcommitmentpopup');
+      return !!(popup && popup.offsetParent !== null);
+    })()
+  `);
+  if (popupStillOpen) {
+    console.log("  ⚠ Import dialog is still open after confirming -- import likely did not succeed");
+    return false;
+  }
+  return true;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -300,6 +336,7 @@ async function main() {
     qualiaId: string;
     requirements: string[];
     exceptions: string[];
+    internalDate: number;
   }
 
   const workQueue: WorkItem[] = [];
@@ -348,7 +385,10 @@ async function main() {
       continue;
     }
 
-    workQueue.push({ emailId: email.id, subject: email.subject, orderNumber, qualiaId: order.qualia_id, requirements, exceptions });
+    workQueue.push({
+      emailId: email.id, subject: email.subject, orderNumber, qualiaId: order.qualia_id,
+      requirements, exceptions, internalDate: email.internalDate,
+    });
   }
 
   if (workQueue.length === 0) {
@@ -356,17 +396,25 @@ async function main() {
     return;
   }
 
-  // Deduplicate by qualiaId
-  const seenQualiaIds = new Map<string, string[]>();
-  const deduped: WorkItem[] = [];
+  // Deduplicate by qualiaId -- more than one email can map to the same order
+  // (e.g. a corrected resend of the bundle). Import the MOST RECENT email's
+  // parsed content (messages.list's own ordering isn't a documented
+  // contract, so pick explicitly by internalDate rather than relying on
+  // request order), but still archive every email mapped to that order once
+  // the import succeeds.
+  const emailIdsByQualiaId = new Map<string, string[]>();
+  const latestByQualiaId = new Map<string, WorkItem>();
   for (const item of workQueue) {
-    if (!seenQualiaIds.has(item.qualiaId)) {
-      seenQualiaIds.set(item.qualiaId, [item.emailId]);
-      deduped.push(item);
-    } else {
-      seenQualiaIds.get(item.qualiaId)!.push(item.emailId);
+    const ids = emailIdsByQualiaId.get(item.qualiaId);
+    if (ids) ids.push(item.emailId);
+    else emailIdsByQualiaId.set(item.qualiaId, [item.emailId]);
+
+    const current = latestByQualiaId.get(item.qualiaId);
+    if (!current || item.internalDate > current.internalDate) {
+      latestByQualiaId.set(item.qualiaId, item);
     }
   }
+  const deduped: WorkItem[] = [...latestByQualiaId.values()];
   console.log(`\n  ${deduped.length} unique order(s) to process`);
 
   for (const item of deduped) {
@@ -379,8 +427,7 @@ async function main() {
       writeFileSync(xmlPath, xml, "utf-8");
 
       await withSession(async (page) => {
-        await importXmlToQualia(page, item.qualiaId, xmlPath);
-        ok = true;
+        ok = await importXmlToQualia(page, item.qualiaId, xmlPath);
       }, { timeout: 3600 });
     } catch (err) {
       console.log(`  ✗ Error: ${err}`);
@@ -388,14 +435,17 @@ async function main() {
       try { unlinkSync(xmlPath); } catch {}
     }
 
-    if (ok) {
-      const allEmailIds = seenQualiaIds.get(item.qualiaId) ?? [item.emailId];
-      for (const emailId of allEmailIds) {
-        await removeLabel(emailId);
-        await archiveEmail(emailId);
-      }
-      console.log(`  ✓ Done. Archived ${allEmailIds.length} email(s) for ${item.orderNumber}`);
+    if (!ok) {
+      console.log(`  ✗ Import not confirmed for ${item.orderNumber} -- leaving email(s) labeled for manual review`);
+      continue;
     }
+
+    const allEmailIds = emailIdsByQualiaId.get(item.qualiaId) ?? [item.emailId];
+    for (const emailId of allEmailIds) {
+      await removeLabel(emailId);
+      await archiveEmail(emailId);
+    }
+    console.log(`  ✓ Done. Archived ${allEmailIds.length} email(s) for ${item.orderNumber}`);
 
     // Brief pause between sessions to avoid Browserbase rate limits
     await new Promise((r) => setTimeout(r, 5000));

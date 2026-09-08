@@ -25,7 +25,12 @@ export async function fillCredentials(page: Page): Promise<void> {
     page.waitForURL((url) => !url.href.includes("/signin"), { timeout: 10_000 }).then(() => "loggedin" as const),
   ]).catch(() => "timeout" as const);
 
-  if (outcome === "loggedin" || outcome === "timeout") return;
+  if (outcome === "loggedin") return;
+  if (outcome === "timeout") {
+    throw new Error(
+      `Sign-in page showed neither the email field nor a redirect away from /signin within 10s. Current URL: ${page.url()}`
+    );
+  }
   await page.locator('input[type="email"]').fill(username!);
   await page.locator('input[type="password"]').fill(password!);
   await page.getByText("Sign In", { exact: true }).click();

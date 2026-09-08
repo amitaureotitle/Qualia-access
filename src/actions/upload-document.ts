@@ -26,11 +26,15 @@ export async function uploadDocument(
   await dismissStartupModals(page);
   await page.waitForTimeout(3000);
 
-  // Click the "Upload" link/button to open the upload dialog
+  // Click the "Upload" link/button to open the upload dialog. Search in
+  // reverse DOM order and take the LAST visible match, not the first — the
+  // toolbar tab that opens the dialog and the dialog's own trigger can both
+  // have this exact text, and a freshly-opened dialog is reliably appended
+  // later in the DOM than the static toolbar above it.
   await page.evaluate(`
     (function() {
       var all = document.querySelectorAll('*');
-      for (var i = 0; i < all.length; i++) {
+      for (var i = all.length - 1; i >= 0; i--) {
         var txt = (all[i].textContent || '').trim();
         if (txt === 'Upload' && all[i].offsetParent !== null) {
           all[i].click();
@@ -68,18 +72,33 @@ export async function uploadDocument(
     await page.waitForTimeout(500);
   }
 
-  // Click Save / Upload / Submit
-  await page.evaluate(`
+  // Click Save / Upload / Submit -- same reverse-order reasoning as the
+  // trigger click above: the confirm button lives in the dialog, appended
+  // after the toolbar that may still be visible behind it.
+  const clickedConfirm = await page.evaluate(`
     (function() {
       var all = document.querySelectorAll('*');
-      for (var i = 0; i < all.length; i++) {
+      for (var i = all.length - 1; i >= 0; i--) {
         var txt = (all[i].textContent || '').trim();
         if ((txt === 'Save' || txt === 'Upload' || txt === 'Submit') && all[i].offsetParent !== null) {
           all[i].click();
-          return;
+          return true;
         }
       }
+      return false;
     })()
   `);
-  await page.waitForTimeout(4000);
+  if (!clickedConfirm) {
+    throw new Error("uploadDocument: could not find a visible Save/Upload/Submit control to confirm the upload");
+  }
+
+  // Verify the upload actually went through rather than assuming success
+  // after a fixed wait: the file input we just populated should detach (the
+  // dialog closing/re-rendering) once Qualia accepts the upload. If it's
+  // still there after a generous timeout, something didn't confirm.
+  try {
+    await page.waitForSelector('input[type="file"]', { state: "detached", timeout: 10_000 });
+  } catch {
+    throw new Error("uploadDocument: upload dialog did not close after confirming -- the upload may not have completed");
+  }
 }
