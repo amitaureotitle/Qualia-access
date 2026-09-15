@@ -141,7 +141,7 @@ app.post("/post-closing/check-and-prepare", requireAuth, async (req: Request, re
       const recording = await verifyRecording(page, order.qualia_id);
       if (!recording.recorded) return { status: "not_recorded" as const };
       return prepareFinalPolicy(page, order.qualia_id);
-    }, { timeout: 600 });
+    }, { timeout: 600, contextId: process.env.QUALIA_CONTEXT_ID });
 
     res.json(result);
   } catch (err) {
@@ -178,7 +178,7 @@ app.post("/post-closing/issue-policies", requireAuth, async (req: Request, res: 
 
     const result = await withSession(
       (page) => issueFinalPolicies(page, order.qualia_id, policies),
-      { timeout: 600 }
+      { timeout: 600, contextId: process.env.QUALIA_CONTEXT_ID }
     );
 
     res.json(result);
@@ -237,7 +237,7 @@ app.post("/post-closing/send-and-close", requireAuth, async (req: Request, res: 
         closeStatus: closeResult.status,
         closeDetail: closeResult.detail,
       };
-    }, { timeout: 600 });
+    }, { timeout: 600, contextId: process.env.QUALIA_CONTEXT_ID });
 
     res.json(result);
   } catch (err) {
@@ -285,7 +285,7 @@ app.post("/accounting/match-emd-wire", requireAuth, async (req: Request, res: Re
 
     const result = await withSession(
       (page) => matchEmdWire(page, orderNumber, fedwireNumber, order.address1, { composeOnly }),
-      { timeout: 300 }
+      { timeout: 300, contextId: process.env.QUALIA_CONTEXT_ID }
     );
 
     res.json(result);
