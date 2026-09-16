@@ -34,6 +34,16 @@ const CLICK_ISSUE_SINGLE = `
   })()
 `;
 
+// String form (not a JS function reference) so this evaluates in the page's
+// own realm, same as the CLICK_* scripts above -- a real function reference
+// would need DOM lib types this repo's tsconfig doesn't include.
+const WAIT_ENABLED = (tag: string) => `
+  (function() {
+    var btn = document.querySelector('${tag}');
+    return !!btn && !btn.classList.contains('disabled');
+  })()
+`;
+
 /**
  * Click "Issue All Policies" (two policies) or the single "Issue" button
  * (cash deal, owner's policy only), then wait for Qualia to actually issue
@@ -47,12 +57,20 @@ export async function issueFinalPolicies(page: Page, orderId: string, policies: 
 
   const script = policies.length > 1 ? CLICK_ISSUE_ALL : CLICK_ISSUE_SINGLE;
   const buttonTag = policies.length > 1 ? "issueallpolicies" : "issuepolicy";
-  // Wait for the button to actually attach rather than a flat timeout (see
-  // prepare-final-policy.ts's checkIfUnchecked comment) -- distinguishes a
-  // genuinely-missing button (already issued, or something's wrong) from
-  // the page just not having loaded yet.
-  await page.locator(buttonTag).first().waitFor({ state: "attached", timeout: 45_000 }).catch(() => {});
   const label = policies.length > 1 ? "Issue All Policies" : "Issue";
+  // Wait for the button to actually attach AND become enabled, not just
+  // attach -- confirmed live 2026-09-17 (real incidents on 2026-MO-306,
+  // 265, 317, 305, 276) that the button routinely attaches to the DOM
+  // still `disabled` for some interval after page load (Qualia's own
+  // async enable check hasn't finished yet), and the old code below only
+  // waited for attachment then read `disabled` synchronously -- a race
+  // that made nearly every FIRST attempt on a real order come back as a
+  // clean "button disabled" error (HTTP 200, not a timeout -- see
+  // AUTOMATIONS.md #1b) instead of a real click. Polling for
+  // "attached and not disabled" here removes that race; a button that's
+  // still disabled after the full timeout is now a genuine error, not a
+  // premature check.
+  await page.waitForFunction(WAIT_ENABLED(buttonTag), { timeout: 45_000 }).catch(() => {});
   const result: string = await page.evaluate(script);
 
   if (result !== "clicked") {
