@@ -6,7 +6,7 @@
 import { withSession } from "../../browserbase";
 import { sendTrailingDocuments } from "../../actions/send-trailing-documents";
 import { closeOrder } from "../../actions/close-order";
-import type { PolicyKind } from "../../actions/prepare-final-policy";
+import type { PolicyKind } from "../../actions/send-trailing-documents";
 
 const qualiaId = process.argv[2];
 const address = process.argv[3];

@@ -1,7 +1,13 @@
 import type { Page } from "playwright-core";
 import { navigateToOrder } from "../utils/navigate";
 import { dismissStartupModals } from "../utils/dismiss-modals";
-import type { PolicyKind } from "./prepare-final-policy";
+
+// Moved here 2026-09-22 when the automated policy-issuance chain
+// (verify-recording.ts/prepare-final-policy.ts/issue-final-policies.ts,
+// the check-and-prepare/issue-policies endpoints) was deleted -- Qualia
+// policy issuance is manual now, this action just needs to know which
+// policy kinds to attach/address.
+export type PolicyKind = "owner" | "lender";
 
 export interface SendTrailingDocsResult {
   status: "sent" | "error";
