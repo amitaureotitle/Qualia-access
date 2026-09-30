@@ -11,6 +11,9 @@
  */
 import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
+import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { getCharges, CdfSection } from "./scripts/read/get-charges";
 import { mcpHandler } from "./mcp-server";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -21,6 +24,7 @@ import { fetchOrderByNumber } from "./utils/order-api";
 import { sendTrailingDocuments, PolicyKind } from "./actions/send-trailing-documents";
 import { closeOrder } from "./actions/close-order";
 import { matchEmdWire } from "./actions/match-emd-wire";
+import { uploadDocument } from "./actions/upload-document";
 
 dotenv.config();
 
@@ -34,7 +38,11 @@ const ISSUER = new URL(process.env.MCP_ISSUER_URL ?? "https://qualia-access.verc
 const oauthProvider = createOAuthProvider();
 
 const app = express();
-app.use(express.json());
+// Default 100kb is too small for a base64-encoded PDF attachment (see
+// /upload-document below); Vercel's own Function request-body cap is 4.5mb
+// regardless of this setting, so this just gets Express out of the way
+// under that ceiling rather than raising it further.
+app.use(express.json({ limit: "4mb" }));
 
 // ─── MCP OAuth endpoints ──────────────────────────────────────────────────────
 
@@ -160,6 +168,64 @@ app.post("/post-closing/send-and-close", requireAuth, async (req: Request, res: 
     }, { timeout: 600, contextId: process.env.QUALIA_CONTEXT_ID });
 
     res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[error] ${message}`);
+    res.status(500).json({ status: "error", detail: message });
+  }
+});
+
+/**
+ * POST /upload-document
+ * Body: { orderNumber: string, files: [{ name: string, content_base64: string }] }
+ * Uploads one or more files to the Documents section of a Qualia order --
+ * thin HTTP wrapper around the existing uploadDocument() Playwright action
+ * (actions/upload-document.ts), previously only reachable via the MCP tool
+ * or the standalone src/scripts/automation/process-labeled-emails.ts
+ * automation. Built for Pipeline-dashboard's inbox triage agent
+ * (receptors/triage_agent.py) so an email attachment can go straight to a
+ * resolved order without a human doing it by hand.
+ * Note: Vercel Functions cap request bodies at 4.5mb -- a base64-encoded
+ * attachment larger than roughly that (after the ~33% base64 overhead)
+ * will be rejected before this handler ever runs.
+ * Returns: { uploaded: string[] } (filenames actually uploaded) or
+ * { status: "error", detail } on failure.
+ */
+app.post("/upload-document", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, files } = req.body as {
+    orderNumber?: string;
+    files?: { name: string; content_base64: string }[];
+  };
+  if (!orderNumber || typeof orderNumber !== "string" || !Array.isArray(files) || files.length === 0) {
+    res.status(400).json({ error: "orderNumber and a non-empty files array are required" });
+    return;
+  }
+
+  console.log(`[${new Date().toISOString()}] upload-document  order=${orderNumber}  files=${files.map((f) => f.name).join(",")}`);
+
+  try {
+    const order = await fetchOrderByNumber(orderNumber);
+    if (!order) {
+      res.status(404).json({ status: "error", detail: `Order ${orderNumber} not found` });
+      return;
+    }
+
+    const dir = mkdtempSync(join(tmpdir(), "qualia-upload-"));
+    const uploaded: string[] = [];
+    try {
+      await withSession(async (page) => {
+        for (const file of files) {
+          const filePath = join(dir, file.name);
+          writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
+          await uploadDocument(page, order.qualia_id, filePath);
+          uploaded.push(file.name);
+        }
+      }, { contextId: process.env.QUALIA_CONTEXT_ID });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    res.json({ uploaded });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[error] ${message}`);
