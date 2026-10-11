@@ -13,7 +13,7 @@ import express, { Request, Response, NextFunction } from "express";
 import dotenv from "dotenv";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, basename } from "path";
 import { getCharges, CdfSection } from "./scripts/read/get-charges";
 import { mcpHandler } from "./mcp-server";
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -39,10 +39,14 @@ const oauthProvider = createOAuthProvider();
 
 const app = express();
 // Default 100kb is too small for a base64-encoded PDF attachment (see
-// /upload-document below); Vercel's own Function request-body cap is 4.5mb
-// regardless of this setting, so this just gets Express out of the way
-// under that ceiling rather than raising it further.
-app.use(express.json({ limit: "4mb" }));
+// /upload-document below). Vercel's own Function request-body cap is 4.5mb
+// regardless of this setting -- raised from 4mb to 6mb (2026-10-12) so THIS
+// limit stops being the binding constraint (4mb of base64 JSON was only
+// ~3.0MiB of raw file bytes, tighter than Vercel's own cap); Vercel's 4.5mb
+// is now the real ceiling, ~3.37MB of raw bytes. Pipeline-dashboard's buyer
+// intake feature enforces its own 3MB-per-file product limit client-side,
+// comfortably under that.
+app.use(express.json({ limit: "6mb" }));
 
 // ─── MCP OAuth endpoints ──────────────────────────────────────────────────────
 
@@ -215,7 +219,13 @@ app.post("/upload-document", requireAuth, async (req: Request, res: Response) =>
     try {
       await withSession(async (page) => {
         for (const file of files) {
-          const filePath = join(dir, file.name);
+          // basename() is load-bearing, not cosmetic: file.name has always
+          // come from a semi-trusted source (Gmail attachment names via the
+          // triage agent), but the Pipeline-dashboard repo's buyer intake
+          // feature (2026-10-12) is adding a path that lets an anonymous
+          // public form feed this endpoint -- without this, a crafted name
+          // like "../../../etc/something" would write outside `dir`.
+          const filePath = join(dir, basename(file.name));
           writeFileSync(filePath, Buffer.from(file.content_base64, "base64"));
           await uploadDocument(page, order.qualia_id, filePath);
           uploaded.push(file.name);
