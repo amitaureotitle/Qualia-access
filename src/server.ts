@@ -25,6 +25,14 @@ import { sendTrailingDocuments, PolicyKind } from "./actions/send-trailing-docum
 import { closeOrder } from "./actions/close-order";
 import { matchEmdWire } from "./actions/match-emd-wire";
 import { uploadDocument } from "./actions/upload-document";
+import { createServer } from "http";
+import { StoppedError } from "./steps/driver";
+import { withDriver } from "./steps/session";
+import { bridge } from "./steps/bridge-driver";
+import { sendMessageStep, AttachmentRef } from "./steps/send-message";
+import { issuePoliciesStep, PolicyPrep } from "./steps/issue-policies";
+import { readRecordingStep } from "./steps/read-recording";
+import { closeOrderStep } from "./steps/close-order";
 
 dotenv.config();
 
@@ -292,14 +300,176 @@ app.post("/accounting/match-emd-wire", requireAuth, async (req: Request, res: Re
   }
 });
 
+// ─── Closeout workflow (Pipeline-dashboard post_closing/closeout/) ───────────
+//
+// One endpoint per browser step, each in its own session: issuing, sending
+// two emails and closing in one call would run past Vercel's 300s
+// maxDuration. The Python side gathers everything from Qualia's API first,
+// confirms each step's outcome from the API afterwards, and holds a
+// try_claim() before every irreversible call -- these routes have no
+// idempotency guard of their own.
+//
+// The steps run through withDriver(): Browserbase normally, or the user's
+// own tab via the Workflow Runner extension when run locally with
+// DRIVER=bridge. A user Stop (StoppedError, before the irreversible click)
+// comes back as {status: "stopped"}; Python then releases the claim.
+
+async function resolveQualiaId(body: { orderNumber?: string; qualiaId?: string }, res: Response): Promise<string | null> {
+  // Pipeline-dashboard sends qualiaId directly; orderNumber lookup kept for other callers.
+  if (body.qualiaId) return body.qualiaId;
+  const order = await fetchOrderByNumber(body.orderNumber!);
+  if (!order) {
+    res.status(404).json({ status: "error", detail: `Order ${body.orderNumber} not found` });
+    return null;
+  }
+  return order.qualia_id;
+}
+
+async function runStep(res: Response, label: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    const out = await fn();
+    if (!res.headersSent) res.json(out); // resolveQualiaId may have answered 404 already
+  } catch (err) {
+    if (err instanceof StoppedError) {
+      res.json({ status: "stopped", detail: err.message });
+      return;
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const sessionId = (err as { sessionId?: string } | null)?.sessionId;
+    console.error(`[error] ${label}: ${message}${sessionId ? `  session=${sessionId}` : ""}`);
+    res.status(500).json({ status: "error", detail: message, sessionId });
+  }
+}
+
+const STEP_SESSION = { timeout: 300, contextId: process.env.QUALIA_CONTEXT_ID };
+
+/**
+ * POST /closeout/read-recording
+ * Body: { orderNumber: string, qualiaId?: string }
+ * Read-only: the order's Recording page table (document + recorded date/time).
+ * Returns: { status: "read"|"error"|"stopped", instruments?: [{document, recorded}], detail? }
+ */
+app.post("/closeout/read-recording", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, qualiaId } = req.body as { orderNumber?: string; qualiaId?: string };
+  if (!orderNumber) {
+    res.status(400).json({ error: "orderNumber is required" });
+    return;
+  }
+  console.log(`[${new Date().toISOString()}] closeout read-recording  order=${orderNumber}`);
+  await runStep(res, "read-recording", async () => {
+    const id = await resolveQualiaId({ orderNumber, qualiaId }, res);
+    if (!id) return;
+    return withDriver((d) => readRecordingStep(d, id), { ...STEP_SESSION, step: "Read recording dates", orderNumber });
+  });
+});
+
+/**
+ * POST /closeout/issue-policies
+ * Body: { orderNumber, qualiaId?, policyCount, rehearse?,
+ *         policies?: { index, kind, effectiveDate, effectiveTime }[] }
+ * Destructive: per policy sets Effective Date/Time and ticks "Use Recording
+ * Date" + "Include Endorsements on Policy", then clicks "Issue All Policies"
+ * (policyCount > 1) or "Issue" -- unless rehearse (dry run), which only
+ * outlines each field, checkbox and the button.
+ * Returns: { status: "clicked"|"rehearsed"|"error"|"stopped", button?, detail? }
+ */
+app.post("/closeout/issue-policies", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, qualiaId, policyCount, policies, rehearse } = req.body as {
+    orderNumber?: string;
+    qualiaId?: string;
+    policyCount?: number;
+    policies?: PolicyPrep[];
+    rehearse?: boolean;
+  };
+  if (!orderNumber || typeof policyCount !== "number" || policyCount < 1) {
+    res.status(400).json({ error: "orderNumber and a positive policyCount are required" });
+    return;
+  }
+  console.log(`[${new Date().toISOString()}] closeout issue-policies  order=${orderNumber}  policyCount=${policyCount}`);
+  await runStep(res, "issue-policies", async () => {
+    const id = await resolveQualiaId({ orderNumber, qualiaId }, res);
+    if (!id) return;
+    return withDriver((d) => issuePoliciesStep(d, id, policyCount, { rehearse, policies }), {
+      ...STEP_SESSION,
+      step: rehearse ? "Issue policies (dry run)" : "Issue policies",
+      orderNumber,
+    });
+  });
+});
+
+/**
+ * POST /closeout/send-message
+ * Body: { orderNumber, qualiaId?, subject, body, recipients: string[],
+ *         attachments: { name, folderPath }[], composeOnly?: boolean }
+ * Destructive unless composeOnly: sends a Qualia "email with attachments".
+ * composeOnly fills everything in, returns a screenshot, and sends nothing.
+ * Returns: { status: "sent"|"composed"|"error"|"stopped", recipientChips?,
+ *            attachments?, bodyPreview?, screenshot?, detail? }
+ */
+app.post("/closeout/send-message", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, qualiaId, subject, body, recipients, attachments, pendingAttachments, clearBodyLines, composeOnly } = req.body as {
+    orderNumber?: string;
+    qualiaId?: string;
+    pendingAttachments?: string[];
+    clearBodyLines?: string[];
+    subject?: string;
+    body?: string;
+    recipients?: string[];
+    attachments?: AttachmentRef[];
+    composeOnly?: boolean;
+  };
+  if (!orderNumber || !subject || !body || !Array.isArray(recipients) || !Array.isArray(attachments)) {
+    res.status(400).json({ error: "orderNumber, subject, body, recipients[] and attachments[] are required" });
+    return;
+  }
+  console.log(`[${new Date().toISOString()}] closeout send-message  order=${orderNumber}  recipients=${recipients.length}  attachments=${attachments.length}${composeOnly ? "  composeOnly" : ""}`);
+  await runStep(res, "send-message", async () => {
+    const id = await resolveQualiaId({ orderNumber, qualiaId }, res);
+    if (!id) return;
+    return withDriver(
+      (d) => sendMessageStep(d, id, { subject, body, recipients, attachments, pendingAttachments, clearBodyLines, composeOnly }),
+      { ...STEP_SESSION, step: composeOnly ? "Compose email (dry run)" : "Send email", orderNumber }
+    );
+  });
+});
+
+/**
+ * POST /closeout/close
+ * Body: { orderNumber: string, qualiaId?: string, rehearse?: boolean }
+ * Destructive: sets the order's status to Closed -- unless rehearse (dry
+ * run): opens the status menu, chooses Closed, outlines "Close Order" in the
+ * confirmation, then clicks "Keep Order".
+ * Returns: { status: "closed"|"rehearsed"|"error"|"stopped", detail? }
+ */
+app.post("/closeout/close", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, qualiaId, rehearse } = req.body as { orderNumber?: string; qualiaId?: string; rehearse?: boolean };
+  if (!orderNumber) {
+    res.status(400).json({ error: "orderNumber is required" });
+    return;
+  }
+  console.log(`[${new Date().toISOString()}] closeout close  order=${orderNumber}${rehearse ? "  (dry run)" : ""}`);
+  await runStep(res, "close", async () => {
+    const id = await resolveQualiaId({ orderNumber, qualiaId }, res);
+    if (!id) return;
+    return withDriver((d) => closeOrderStep(d, id, { rehearse }), {
+      ...STEP_SESSION,
+      step: rehearse ? "Close order (dry run)" : "Close order",
+      orderNumber,
+    });
+  });
+});
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 // Export for Vercel serverless handler
 export default app;
 
-// Only bind a port when running locally (not on Vercel)
+// Only bind a port when running locally (not on Vercel). DRIVER=bridge
+// (local workflow testing) also hosts the extension's WebSocket on /bridge.
 if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`Qualia Access API listening on http://localhost:${PORT}`);
+  const server = createServer(app);
+  if (process.env.DRIVER === "bridge") bridge.attach(server);
+  server.listen(PORT, "127.0.0.1", () => {
+    console.log(`Qualia Access API listening on http://localhost:${PORT}${process.env.DRIVER === "bridge" ? "  (DRIVER=bridge)" : ""}`);
   });
 }

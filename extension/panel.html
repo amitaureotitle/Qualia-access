@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Workflow Runner</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <h1>Workflow Runner</h1>
+    <div class="conn">
+      <span class="conn-item"><span id="dot-dash" class="dot warn"></span>Dashboard</span>
+      <span class="conn-item"><span id="dot-bridge" class="dot warn"></span>Bridge</span>
+    </div>
+  </header>
+
+  <section class="card">
+    <label class="field">Workflow
+      <select id="workflow"></select>
+    </label>
+    <div id="workflow-desc" class="muted"></div>
+    <div id="order-title" class="order-title"></div>
+    <div id="detected" class="muted"></div>
+    <input id="order-input" type="text" placeholder="Leave empty to use this tab — or type an order number / Qualia ID" autocomplete="off">
+  </section>
+
+  <section class="controls">
+    <div class="mode" role="group" aria-label="Mode">
+      <button data-mode="compose" class="on">Dry run</button>
+      <button data-mode="live">Live</button>
+    </div>
+    <button id="run" class="primary">Run</button>
+    <button id="pause" class="secondary">Pause</button>
+    <button id="stop" class="danger">Stop</button>
+  </section>
+
+  <div id="status" class="status idle">Idle</div>
+
+  <section id="now" class="now" hidden>
+    <div class="now-step" id="now-step"></div>
+    <div class="now-row"><span id="now-action" class="now-action"></span><span id="now-count" class="now-count"></span></div>
+    <div id="now-note" class="muted"></div>
+  </section>
+
+  <section id="approval" class="approval" hidden>
+    <div class="approval-title">About to:</div>
+    <div id="approve-label" class="approval-label"></div>
+    <div class="approval-actions">
+      <button id="approve-yes" class="primary">Continue</button>
+      <button id="approve-no" class="danger">Stop</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-title">Plan</div>
+    <ol id="plan" class="steps"></ol>
+  </section>
+
+  <section id="data" class="data"></section>
+
+  <section id="shot-wrap" class="shot" hidden>
+    <div class="section-title">Last screenshot</div>
+    <img id="shot" alt="Latest screenshot from the run">
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div class="section-title">Log <span id="run-id" class="muted mono"></span></div>
+      <label class="check small"><input id="show-debug" type="checkbox"> Show debug</label>
+    </div>
+    <div id="log" class="log"></div>
+  </section>
+
+  <details id="history" class="history">
+    <summary>Recent runs <span class="muted">(local + GitHub)</span></summary>
+    <button id="refresh-history" class="secondary small">Refresh</button>
+    <div id="history-list"></div>
+  </details>
+
+  <details id="settings" class="settings">
+    <summary>Settings</summary>
+    <label>Pause before each action
+      <select id="s-delay">
+        <option value="0">None (real speed)</option>
+        <option value="500">0.5 s</option>
+        <option value="1000">1 s</option>
+        <option value="2000">2 s</option>
+        <option value="3000">3 s</option>
+        <option value="5000">5 s</option>
+      </select>
+    </label>
+    <label class="check"><input id="s-confirm" type="checkbox"> Ask before every irreversible click (Issue, Send, Close)</label>
+    <label>Dashboard (dev API) <input id="s-dashboard" type="url"></label>
+    <label>Bridge <input id="s-bridge" type="url"></label>
+    <label>Qualia URL <input id="s-qualia" type="url"></label>
+    <button id="save-settings" class="secondary">Save</button>
+  </details>
+
+  <script src="dist/panel.js"></script>
+</body>
+</html>

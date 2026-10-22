@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Aureo Workflow Runner",
+  "version": "0.2.0",
+  "description": "Run any Pipeline-dashboard workflow live in your own Qualia tab -- every action outlined and paced, with pause, stop and approvals.",
+  "permissions": ["debugger", "sidePanel", "storage", "tabs"],
+  "host_permissions": [
+    "https://aureotitle.qualia.io/*",
+    "http://localhost:5001/*",
+    "http://localhost:3001/*"
+  ],
+  "background": { "service_worker": "dist/background.js" },
+  "side_panel": { "default_path": "panel.html" },
+  "action": { "default_title": "Workflow Runner" }
+}
