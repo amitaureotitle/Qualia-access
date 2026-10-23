@@ -164,7 +164,11 @@ async function clearLeftovers(d: Driver): Promise<{ removed: string[]; error?: s
 
 export async function sendMessageStep(d: Driver, orderId: string, input: SendMessageInput): Promise<SendMessageResult> {
   if (input.recipients.length === 0) return { status: "error", detail: "No recipients given." };
-  if (input.attachments.length === 0) return { status: "error", detail: "No attachments given." };
+  // A dry run on an unissued order can have nothing attachable yet (the
+  // lender email carries only the Lender's Policy) -- fine if it's pending.
+  if (input.attachments.length === 0 && !(input.composeOnly && input.pendingAttachments?.length)) {
+    return { status: "error", detail: "No attachments given." };
+  }
 
   await openOrder(d, orderId, "dashboard");
   await d.sleep(3_000);
