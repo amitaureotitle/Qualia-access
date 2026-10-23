@@ -310,7 +310,11 @@ export async function sendMessageStep(d: Driver, orderId: string, input: SendMes
       await d.evaluate<string>(`
         (function() {
           var dd = document.querySelector('[${RECIPIENTS_MARK}]');
-          return JSON.stringify(Array.from(dd.querySelectorAll('.ui.label, a.label')).map(function(l) {
+          // Skip the role tags ("Borrower", "Escrow Officer", ...) on the
+          // contact options in the dropdown menu -- only chosen chips count
+          // (seen 2026-10-23: 24 role tags reported as recipients).
+          var chosen = Array.from(dd.querySelectorAll('.ui.label, a.label')).filter(function(l) { return !l.closest('.menu'); });
+          return JSON.stringify(chosen.map(function(l) {
             return (l.textContent || '').replace(/\\s+/g, ' ').trim();
           }));
         })()
