@@ -25,6 +25,7 @@ import { sendTrailingDocuments, PolicyKind } from "./actions/send-trailing-docum
 import { closeOrder } from "./actions/close-order";
 import { matchEmdWire } from "./actions/match-emd-wire";
 import { uploadDocument } from "./actions/upload-document";
+import { fillBorrower, BorrowerFields } from "./actions/fill-borrower";
 import { createServer } from "http";
 import { StoppedError } from "./steps/driver";
 import { withDriver } from "./steps/session";
@@ -457,6 +458,38 @@ app.post("/closeout/close", requireAuth, async (req: Request, res: Response) => 
       orderNumber,
     });
   });
+});
+
+// Fill an individual buyer's blank contact fields (Contacts -> Buyers -> index).
+// Called by Pipeline-dashboard's Order Assistant after a human approves; the
+// caller sends only fields that are blank in Qualia (checked via the GraphQL
+// API) and re-reads them afterwards to verify. Field VALUES (including SSN)
+// are never logged -- only their names.
+app.post("/contacts/fill-borrower", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, qualiaId, index, fields } = req.body as { orderNumber?: string; qualiaId?: string; index?: number; fields?: BorrowerFields };
+  if (!orderNumber || !fields || typeof fields !== "object") {
+    res.status(400).json({ error: "orderNumber and fields are required" });
+    return;
+  }
+  const idx = Number.isInteger(index) ? (index as number) : 0;
+  console.log(`[${new Date().toISOString()}] contacts fill-borrower  order=${orderNumber}  index=${idx}  fields=${Object.keys(fields).join(",")}`);
+  try {
+    // The caller knows Qualia's internal id; only look it up when it's missing.
+    const orderId = qualiaId || (await fetchOrderByNumber(orderNumber))?.qualia_id;
+    if (!orderId) {
+      res.status(404).json({ status: "error", detail: `Order ${orderNumber} not found` });
+      return;
+    }
+    const result = await withSession(
+      (page) => fillBorrower(page, orderId, idx, fields),
+      { timeout: 300, contextId: process.env.QUALIA_CONTEXT_ID }
+    );
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[error] fill-borrower: ${message.split("\n")[0]}`);
+    res.status(500).json({ status: "error", detail: message.split("\n")[0] });
+  }
 });
 
 // ─── Start ────────────────────────────────────────────────────────────────────
