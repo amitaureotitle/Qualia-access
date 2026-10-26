@@ -33,6 +33,7 @@ import { bridge } from "./steps/bridge-driver";
 import { sendMessageStep, AttachmentRef } from "./steps/send-message";
 import { issuePoliciesStep, PolicyPrep } from "./steps/issue-policies";
 import { readRecordingStep } from "./steps/read-recording";
+import { printPoliciesStep, PolicyRef } from "./steps/print-policies";
 import { closeOrderStep } from "./steps/close-order";
 
 dotenv.config();
@@ -395,6 +396,28 @@ app.post("/closeout/issue-policies", requireAuth, async (req: Request, res: Resp
       step: rehearse ? "Issue policies (dry run)" : "Issue policies",
       orderNumber,
     });
+  });
+});
+
+/**
+ * POST /closeout/print-policies
+ * Body: { orderNumber, qualiaId?, policies: { index, kind }[] }
+ * Fallback when a policy is issued but its "Full ... Policy" PDF never
+ * appeared in Documents: presses Print on each given policy (selecting its
+ * tab first), which makes Qualia generate the files. Not irreversible.
+ * Returns: { status: "printed"|"error"|"stopped", printed?: string[], detail? }
+ */
+app.post("/closeout/print-policies", requireAuth, async (req: Request, res: Response) => {
+  const { orderNumber, qualiaId, policies } = req.body as { orderNumber?: string; qualiaId?: string; policies?: PolicyRef[] };
+  if (!orderNumber || !Array.isArray(policies) || policies.length === 0) {
+    res.status(400).json({ error: "orderNumber and a non-empty policies[] are required" });
+    return;
+  }
+  console.log(`[${new Date().toISOString()}] closeout print-policies  order=${orderNumber}  policies=${policies.map((p) => p.kind).join(",")}`);
+  await runStep(res, "print-policies", async () => {
+    const id = await resolveQualiaId({ orderNumber, qualiaId }, res);
+    if (!id) return;
+    return withDriver((d) => printPoliciesStep(d, id, policies), { ...STEP_SESSION, step: "Print policies", orderNumber });
   });
 });
 

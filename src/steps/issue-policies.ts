@@ -201,8 +201,18 @@ export async function issuePoliciesStep(
     // clickFound only fails before clicking, so this is safe to retry.
     return { status: "error", button: label, prepared, detail: `"${label}" button ${result} at click time.` };
   }
-  // Give Qualia a moment to accept the click; issuance itself is confirmed
-  // by the caller from the API.
+  // Stay on the page until the policy shows as issued (its Print/Void
+  // buttons appear), then a little longer: Qualia creates the policy PDFs
+  // after issuing, and leaving too soon may stop that (2026-MI-357,
+  // 2026-10-26, got no PDFs). Issuance itself is confirmed by the caller
+  // from the API, which also presses Print as a fallback if the PDFs are
+  // still missing (print-policies.ts).
   await d.sleep(5_000);
+  const shown = await d.waitFor(
+    `Array.from(document.querySelectorAll('*')).some(function(e){ return e.offsetParent !== null && !e.children.length && (e.textContent || '').trim() === 'Void'; })`,
+    30_000
+  );
+  d.note(shown ? "Policy shows as issued; waiting for the policy files" : "Issued state not shown after 30s; waiting anyway");
+  await d.sleep(15_000);
   return { status: "clicked", button: label, prepared };
 }
