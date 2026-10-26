@@ -62,6 +62,24 @@ function folderLeaf(folderPath: string): string {
   return parts[parts.length - 1] ?? folderPath;
 }
 
+// The issued policy files, e.g. "Full Owner Policy", "Full Lender Policy #2".
+const FULL_POLICY = /^Full (Owner|Lender) Policy( #\d+)?$/;
+
+/**
+ * The folder labels the attachment picker may show for a file: its folder's
+ * leaf name. Only for a "Full Owner/Lender Policy" in the top "Documents"
+ * folder does the picker say "All Files" instead (seen 2026-10-26 on
+ * 2026-MI-357), and per the user that's fine for those files only -- every
+ * other file (the recorded deed / deed of trust) must match its own folder,
+ * "Recorded documents".
+ */
+function folderLabels(name: string, folderPath: string): string[] {
+  const parts = folderPath.split("/").filter(Boolean);
+  const leaf = folderLeaf(folderPath);
+  const topLevelPolicy = FULL_POLICY.test(name.trim()) && parts.length === 1 && leaf === "Documents";
+  return topLevelPolicy ? [leaf, "All Files"] : [leaf];
+}
+
 /**
  * Page-side helper for the attachment strip (file chips between the body
  * editor and the Send row). Called with 'mark': tags the first chip's remove
@@ -368,12 +386,13 @@ export async function sendMessageStep(d: Driver, orderId: string, input: SendMes
   }
   await d.sleep(1_000);
 
-  // Attachments -- each picker item's text is "<file name><folder leaf>"
-  // concatenated (optionally whitespace-separated). Require an exact match
+  // Attachments -- each picker item's text is "<file name><folder label>"
+  // concatenated (optionally whitespace-separated; see folderLabels() for
+  // "All Files", which only a "Full ... Policy" may match). Require an exact match
   // so "Full Owner Policy" doesn't also hit "Full Owner Policy #2" or the
   // copy in "Voided Title Policies".
   d.note(`Attaching ${input.attachments.map((a) => a.name).join(" + ")}`);
-  const wanted = input.attachments.map((a) => ({ name: a.name, leaf: folderLeaf(a.folderPath) }));
+  const wanted = input.attachments.map((a) => ({ name: a.name, leaf: folderLeaf(a.folderPath), labels: folderLabels(a.name, a.folderPath) }));
   const attachRaw = await d.evaluate<string>(`
     (function() {
       var menu = document.querySelector('${POPUP} .scrolling.menu');
@@ -383,9 +402,9 @@ export async function sendMessageStep(d: Driver, orderId: string, input: SendMes
       var wanted = ${JSON.stringify(wanted)};
       var matches = [], missing = [], ambiguous = [];
       wanted.forEach(function(w) {
-        var name = norm(w.name), leaf = norm(w.leaf);
+        var name = norm(w.name);
         var hits = items.filter(function(it) {
-          return it.t === name + leaf || it.t === name + ' ' + leaf;
+          return w.labels.some(function(l) { l = norm(l); return it.t === name + l || it.t === name + ' ' + l; });
         });
         if (hits.length === 0) {
           var near = items.filter(function(it) { return it.t.indexOf(name) === 0; }).map(function(it) { return it.t; });
