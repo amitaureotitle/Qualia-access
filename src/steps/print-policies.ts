@@ -13,6 +13,12 @@ import { Driver, clickFound, openOrder } from "./driver";
  * Not irreversible -- it only (re)generates files -- so there's no commit():
  * a failure is safe to retry. Whether the PDFs now exist is checked by the
  * caller from Qualia's API.
+ *
+ * Never press Print while a generation may be running (per the user): the
+ * caller only asks once Qualia has been quiet for 3 min, and here Print is
+ * only clicked when its button isn't busy (loading/disabled), each button is
+ * clicked once, and after a click the step waits for the button to stop
+ * being busy before moving on to the next policy.
  */
 
 export interface PolicyRef {
@@ -65,6 +71,17 @@ const PRINT_EXPR = `(function() {
   return null;
 })()`;
 
+/** JS expression: "ready", "busy" (Semantic UI loading/disabled on the button), or "missing". */
+const PRINT_STATE_EXPR = `(function() {
+  var b = ${PRINT_EXPR};
+  if (!b) return 'missing';
+  var busy = /\\b(loading|disabled)\\b/.test(b.className || '') || b.disabled || b.getAttribute('aria-busy') === 'true';
+  return busy ? 'busy' : 'ready';
+})()`;
+
+// Longest we wait for a busy Print button (a generation running) to settle.
+const BUSY_WAIT_MS = 60_000;
+
 export async function printPoliciesStep(d: Driver, orderId: string, policies: PolicyRef[]): Promise<PrintResult> {
   await openOrder(d, orderId, "title/final_policy");
   if (!(await d.waitFor(`!!document.querySelector('[data-schema-key^="title.policies."]')`, 45_000))) {
@@ -84,12 +101,23 @@ export async function printPoliciesStep(d: Driver, orderId: string, policies: Po
     if (!(await d.waitFor(`!!${PRINT_EXPR}`, 15_000))) {
       return { status: "error", printed, detail: `No "Print" button next to "Void" for the ${p.kind} policy -- is it issued?` };
     }
-    const r = await clickFound(d, PRINT_EXPR, `Click "Print" (${p.kind} policy)`);
+    // A busy button means a generation is running -- don't press it.
+    const state = await d.evaluate<string>(PRINT_STATE_EXPR);
+    if (state !== "ready") {
+      return { status: "error", printed, detail: `${p.kind} policy "Print" is ${state} (a generation may be running) -- not pressed` };
+    }
+    const r = await clickFound(d, `(function(){ var s = ${PRINT_STATE_EXPR}; return s === 'ready' ? ${PRINT_EXPR} : 'busy'; })()`,
+      `Click "Print" (${p.kind} policy)`);
     if (r !== "clicked") return { status: "error", printed, detail: `${p.kind} policy "Print": ${r}` };
-    // Stay on the page while Qualia generates the files; leaving right away
-    // may be what stopped them being created after Issue.
+    // Stay on the page while Qualia generates the files (leaving right away
+    // may be what stopped them being created after Issue), and don't touch
+    // the next policy until this one's button has settled.
     d.note("Waiting for Qualia to create the policy files");
     await d.sleep(AFTER_PRINT_MS);
+    if (!(await d.waitFor(`${PRINT_STATE_EXPR} !== 'busy'`, BUSY_WAIT_MS))) {
+      printed.push(p.kind);
+      return { status: "error", printed, detail: `${p.kind} policy "Print" still busy ${BUSY_WAIT_MS / 1000}s after clicking -- stopped before the next policy` };
+    }
     printed.push(p.kind);
   }
   return { status: "printed", printed };
