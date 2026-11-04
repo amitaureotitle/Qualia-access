@@ -58,6 +58,23 @@ const app = express();
 // comfortably under that.
 app.use(express.json({ limit: "6mb" }));
 
+// ─── Paused ───────────────────────────────────────────────────────────────────
+// 2026-11-04: Qualia's security team wrote that automated access (bots,
+// headless browsers) breaks the Master Agreement and they're blocking those
+// accounts. Every route -- the pipeline's calls, the MCP connector and its
+// OAuth -- answers 503 before any browser session starts, until this is
+// flipped back. Pipeline-dashboard has the matching switch
+// (skills/qualia_access.py, PAUSED).
+const PAUSED = true;
+
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  if (!PAUSED) return next();
+  res.status(503).json({
+    status: "paused",
+    detail: "Qualia browser automation is paused (Qualia security notice, 2026-11-04).",
+  });
+});
+
 // ─── MCP OAuth endpoints ──────────────────────────────────────────────────────
 
 app.use(mcpAuthRouter({ provider: oauthProvider, issuerUrl: ISSUER }));
